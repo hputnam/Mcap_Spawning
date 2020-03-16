@@ -1,0 +1,22 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1584230746252.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "1525274270",
+    "id" : "1E5FC64F",
+    "lastKnownWriteTime" : 1584317321,
+    "last_content_update" : 1584317321751,
+    "path" : "~/MyProjects/Mcap_Spawning_Timing/RAnalysis/Scripts/Mcap_Spawn_Analysis.R",
+    "project_path" : "Scripts/Mcap_Spawn_Analysis.R",
+    "properties" : {
+        "cursorPosition" : "95,64",
+        "scrollLine" : "85"
+    },
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}
