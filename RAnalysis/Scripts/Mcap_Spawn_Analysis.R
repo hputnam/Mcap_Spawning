@@ -36,12 +36,25 @@ write.csv(counts.5x, file="Output/filtered_counts.csv")
 storage.mode(counts.5x) = "integer" #store counts data as integer
 sample.info <- read.csv(file="Data/sample_description.csv", header=T, sep=",", row.names=1) #load sample info
 
-Mcap.annot <- read.csv(file="Data/Mcap-GO-KO-Kegg.tab", header=FALSE, sep="\t") #Load expression matrix f
+Mcap.annot <- read.csv(file="Data/Mcap-GO-KO-Kegg.tab", header=FALSE, sep="\t", na.strings="") #Load expression matrix f
 colnames(Mcap.annot) <- c("Uniprot", "gene", "eval", "Prot.ID", "Rev", "Prot.Name.Long", "Prot.Name.Short", "Taxa", "Num", "GO1", "GO2", "GO3", "GO4", "GO.IDs","KEGG", "KEGG.Path")  
 Mcap.annot <- Mcap.annot %>% 
   distinct(gene, .keep_all = TRUE)
 Mcap.annot$gene <- gsub("augustus.", "", Mcap.annot$gene)
 Mcap.annot$gene <- gsub(".t1", "", Mcap.annot$gene)
+Mcap.annot$GO.IDs <- Mcap.annot$GO.IDs[is.na(Mcap.annot$GO.IDs)] <- "unknown" #list NA as unknown
+
+
+gene.len.df <- read.csv(file="Data/Mcap_stringtie_merged.gtf", header=FALSE, sep="\t", skip=2)
+gene.len.df <- gene.len.df %>%
+  filter(V3 == "transcript" )
+gene.len.df$length <- gene.len.df$V5-gene.len.df$V4
+gene.len.df$gene <- gene.len.df$V9
+gene.len.df <- gene.len.df %>% 
+  separate(gene, c("gene", "name"), sep=";")
+gene.len.df$gene <- gsub("transcript_id ", "", gene.len.df$name)
+gene.len.df$gene <- gsub(".t1", "", gene.len.df$gene)
+gene.len.df <- gene.len.df[,10:11]
 
 #http://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#the-deseqdataset
 #it is also possible to retrieve the log2 fold changes, p values and adjusted p values of variables other than the last one in the design. While in this case, type is not biologically interesting as it indicates differences across sequencing protocol, for other hypothetical designs, such as ~genotype + condition + genotype:condition, we may actually be interested in the difference in baseline expression across genotype, which is not the last variable in the design.
@@ -229,7 +242,7 @@ out <- pheatmap(mat, color = colorRampPalette(c("darkblue", "cyan", "white", "ye
 dev.off()
 pdf(file="Output/Unique_Heatmap.DEG.Annotated.pdf") #save file
 pheatmap(mat, color = colorRampPalette(c("darkblue", "cyan", "white", "yellow", "red"))(100), annotation_col=df, scale="row",
-         show_rownames =T, fontsize_row = 4, cluster_cols = FALSE,
+         show_rownames =T, fontsize_row = 4, cluster_cols = FALSE, cutree_rows=5,
          show_colnames =F) #plot heatmap of all DEG by group
 dev.off()
 
@@ -246,754 +259,90 @@ plot(k.values, wss_values,
 dev.off()
 
 ##### Extract the clusters
-clusts <- as.data.frame(sort(cutree(out$tree_row, k=6)))
+Unique.rsig <- as.data.frame(Unique.rsig)
+Unique.rsig$ann.row <- Unique.DEG.annot$ann.row
+
+clusts <- as.data.frame(sort(cutree(out$tree_row, k=5)))
 clusts$gene <- rownames(clusts)
-colnames(clusts) <- c("Cluster", "gene")
+colnames(clusts) <- c("Cluster", "ann.row")
+clusts.df <- as.data.frame(clusts)
+clusts.gene.annot <- left_join(clusts.df, Unique.rsig)
+clusts.gene.annot.long <- clusts.gene.annot %>%
+  pivot_longer(cols = starts_with("T"))
+
+clusts.gene.annot.df <- left_join(clusts.gene.annot.long, sample.info)
+
+clusts.gene.annot.df$group <-  paste0(clusts.gene.annot.df$Period, "_", clusts.gene.annot.df$Spawn)
+  
+mean.clust <- clusts.gene.annot.df %>%
+  group_by(Cluster, Period, Spawn) %>%
+  summarise(rlog.mean.exp= mean(value))
+
+clusts.gene.annot.df$Cluster.Num <- as.factor(as.character(clusts.gene.annot.df$Cluster))
+clusts.gene.annot.df$group <- factor(clusts.gene.annot.df$group, levels = c("PreSpawn_NO", "PreSpawn_YES", "Set_NO", "Set_YES", "PostSpawn_NO", "PostSpawn_YES"))
+
+clusts.gene.annot.df %>%
+  #filter(Cluster %in% 1) %>%
+  group_by(ann.row, Spawn, Time.Num, Cluster) %>%
+  summarise(mean.exp = mean(value)) %>%
+  mutate(gene.spawn = paste(ann.row, Spawn)) %>%
+  ggplot(aes(x=Time.Num, y=mean.exp, colour=Spawn)) +
+  geom_line(aes(group=gene.spawn), alpha=0.5) +
+  geom_line(aes(group=Spawn), stat = "summary", fun.y = "mean", size = 1.5) +
+  facet_grid(cols = vars(Cluster)) +
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(),
+   panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+
+##### GO ENRICHMENT ANALYSIS #####
+#read in data files
+##### GO enrichment SpawnCon.sig.list
+ALL<-row.names(data) #set the all transcripts list
+DEG <- row.names(SpawnCon.sig.list) #set the enrichment test list
+LENGTH <- gene.len.df #merge lengths and transcripts
+
+GOs <- merge(GOs, LENGTH, by="V1") #merge
+GOs <- GOs[,1:2] #remove length
+splitted <- strsplit(as.character(GOs$V2.x), ",") #slit into multiple GO ids
+GO.terms <- data.frame(v1 = rep.int(GOs$V1, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
+IDs <- row.names(data) #set ID names
+
+#change contig lists to vectors
+ALL.vector <-c(t(ALL))
+DEG.vector <-c(t(DEG))
+ID.vector <- LENGTH$V1
+LENGTH.vector <-LENGTH$V2
+
+gene.vector=as.integer(ALL.vector%in%DEG.vector) #Construct new vector with 1 for DEG and 0 for others
+names(gene.vector)=ALL.vector #set names
+DEG.pwf<-nullp(gene.vector, ID.vector, bias.data=LENGTH.vector) #weight vector by length of gene
+
+#Find enriched GO terms, "selection-unbiased testing for category enrichment amongst differentially expressed (DE) genes for RNA-seq data"
+GO.wall<-goseq(DEG.pwf, ID.vector, gene2cat=GO.terms, test.cats=c("GO:CC", "GO:BP", "GO:MF"), method="Wallenius", use_genes_without_cat=TRUE)
+
+#How many enriched GO terms do we have
+class(GO.wall)
+head(GO.wall)
+tail(GO.wall)
+nrow(GO.wall)
+
+#Find only enriched GO terms that are statistically significant at cutoff
+enriched.GO.05.a<-GO.wall$category[GO.wall$over_represented_pvalue<.05]
+enriched.GO.05<-data.frame(enriched.GO.05.a)
+colnames(enriched.GO.05) <- c("category")
+enriched.GO.05 <- merge(enriched.GO.05, GO.wall, by="category")
+
+MF.INT <- subset(enriched.GO.05, ontology=="MF")
+MF.INT <- MF.INT[order(-MF.INT$numDEInCat),]
+CC.INT <- subset(enriched.GO.05, ontology=="CC")
+CC.INT <- CC.INT[order(-CC.INT$numDEInCat),]
+BP.INT <- subset(enriched.GO.05, ontology=="BP")
+BP.INT <- BP.INT[order(-BP.INT$numDEInCat),]
+write.csv(MF.INT , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/MF_Sig_Enriched_GO.05_INT.csv")
+write.csv(CC.INT , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/CC_Sig_Enriched_GO.05_INT.csv")
+write.csv(BP.INT , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/BP_Sig_Enriched_GO.05_INT.csv")
 
-
-
-
-
-
-
-
-
-
-
-##### Analysis by Group #####
-sample.info$group <- paste0(sample.info$Period,"_", sample.info$Spawn)
-
-data2 <- DESeqDataSetFromMatrix(countData = counts.5x, colData = sample.info, design = ~ group) #create a DESeqDataSet object
-DEG.int <- DESeq(data2) #run differential expression test by group using the wald test 
-results(DEG.int)
-DEG.int.res <- results(DEG.int) #save DE results
-head(DEG.int.res)
-plotMA(DEG.int.res, ylim=c(-7,6))
-sum(DEG.int.res$padj <0.05, na.rm=T)
-DEG.sig <- subset(DEG.int.res, padj<0.05,) #identify signficant pvalues with 5%FDR
-plotMA(DEG.sig, ylim=c(-7,6))
-DEG.sig.list <- data2[which(rownames(data2) %in% rownames(DEG.sig)),] #subset list of sig transcripts from original count data
-write.csv(counts(DEG.sig.list), file="Output/Group_compare_DEG.csv")
-DEG.rsig <- rlog(DEG.sig.list, blind=FALSE) #apply a regularized log transformation to minimize effects of small counts and normalize wrt library size
-PCA.plot <- plotPCA(DEG.rsig, intgroup = c("Spawn", "Period")) #Plot PCA of all samples for DEG only
-PCA.plot #view plot
-
-PC.info <-PCA.plot$data #extract plotting data
-pdf(file="Output/PCA.DEG.pdf")
-plot(PC.info$PC1, PC.info$PC2, xlim=c(-12,12), ylim=c(-9, 9), xlab="PC1 44%", ylab="PC2 28%", col = c("lightpink2", "steelblue1","yellow3")[as.numeric(PC.info$Time)], pch=c(16, 17)[as.numeric(PC.info$Spawn)], cex=1.3)
-legend(x="topleft", 
-       bty="n",
-       legend = c("00:00", "18:00", "20:00", "Not Spawning", "Spawning"),
-       text.col = c("lightpink2","steelblue1","yellow3", "black", "black"),
-       pch = c(15, 15, 15, 16, 17),
-       col = c("white","white","white", "black", "black"),
-       cex=1)
-dev.off()
-
-mat <- assay(DEG.rsig) #make an expression object
-col.order <- c("T4.17","T4.1","T4.6",
-               "T5.17","T5.1","T5.6",
-               "T7.17","T7.1","T7.6",
-               "T4.10","T4.16","T4.8",
-               "T5.10","T5.16","T5.8",
-               "T7.10","T7.16","T7.8")
-mat <- mat[,col.order]
-df <- as.data.frame(colData(DEG.rsig)[,c("Spawn","Period")]) #make dataframe
-df <- df[order(df$Spawn),]
-
-DEG.Heat.res <- pheatmap(mat, color = colorRampPalette(c("darkblue", "cyan", "white", "yellow", "red"))(100), annotation_col=df, clustering_method = "average", scale="row",
-         clustering_distance_rows="euclidean", show_rownames =FALSE, cluster_cols=FALSE, cluster_rows=TRUE,
-         show_colnames =TRUE) #plot heatmap of all DEG by group
-
-#Pairwise results
-resultsNames(DEG.int)
-#"Intercept"                           "group_PostSpawn_YES_vs_PostSpawn_NO"
-# "group_PreSpawn_NO_vs_PostSpawn_NO"   "group_PreSpawn_YES_vs_PostSpawn_NO" 
-# "group_Set_NO_vs_PostSpawn_NO"        "group_Set_YES_vs_PostSpawn_NO"
-#Int_Con.Res <- results(DEG.int, contrast=c("group", "Set_NO_vs_PostSpawn_NO","Set_YES_vs_PostSpawn_NO"))
-
-
-
-
-
-
-##### Examine Transcript Cluster Patterns #####
-#check for optimal number of clusters for reporting expression patterns
-#K means clustering Elbow Method
-set.seed(123) #Specify which set of random numbers to use. This will make sure that the same set of random numbers is generated each timea random set of numbers is called. 
-wss <- function(k) {kmeans(trans.data, k, iter.max = 100, nstart = 25 )$tot.withins} # function to compute total within-cluster sum of square 
-k.values <- 1:15# Compute and plot wss for k = 1 to k = 15
-wss_values <- map_dbl(k.values, wss) # extract wss for 2-15 clusters
-pdf(file="Output/Mcap_elbow.pdf")
-plot(k.values, wss_values,
-     type="b", pch = 19, frame = FALSE, 
-     xlab="Number of clusters (K)",
-     ylab="Total within-clusters sum of squares")
-dev.off()
-
-#Permutational analysis to test cluster against a null model (i.e., chance along)
-
-#set optimal cluster number based on results above
-knum <-10
-DEG.clust <- cbind(mat, cluster = cutree(DEG.Heat.res$tree_row, k = knum))[DEG.Heat.res$tree_row[["order"]]]
-DEG.clust <- as.data.frame(DEG.clust)
-cluster.order <- cbind(mat[c(DEG.Heat.res$tree_row[["order"]]),DEG.Heat.res$tree_col[["order"]]],cluster=cutree(DEG.Heat.res$tree_row, k=knum)[DEG.Heat.res$tree_row[["order"]]])
-
-cluster.order <- as.data.frame(cluster.order)
-DEG.clust1 <- cluster.order[cluster.order$cluster == '1',]
-DEG.clust1 <- DEG.clust1[,-19] 
-DEG.clust2 <- cluster.order[cluster.order$cluster == '2',]
-DEG.clust2 <- DEG.clust2[,-19] 
-DEG.clust3 <- cluster.order[cluster.order$cluster == '3',]
-DEG.clust3 <- DEG.clust3[,-19] 
-DEG.clust4 <- cluster.order[cluster.order$cluster == '4',]
-DEG.clust4 <- DEG.clust4[,-19] 
-DEG.clust5 <- cluster.order[cluster.order$cluster == '5',]
-DEG.clust5 <- DEG.clust5[,-19] 
-DEG.clust6 <- cluster.order[cluster.order$cluster == '6',]
-DEG.clust6 <- DEG.clust6[,-19] 
-DEG.clust7 <- cluster.order[cluster.order$cluster == '7',]
-DEG.clust7 <- DEG.clust7[,-19] 
-DEG.clust8 <- cluster.order[cluster.order$cluster == '8',]
-DEG.clust8 <- DEG.clust8[,-19] 
-DEG.clust9 <- cluster.order[cluster.order$cluster == '9',]
-DEG.clust9 <- DEG.clust9[,-19] 
-DEG.clust10 <- cluster.order[cluster.order$cluster == '10',]
-DEG.clust10 <- DEG.clust10[,-19]
-DEG.clust11 <- cluster.order[cluster.order$cluster == '11',]
-DEG.clust11 <- DEG.clust11[,-19] 
-DEG.clust12 <- cluster.order[cluster.order$cluster == '12',]
-DEG.clust12 <- DEG.clust12[,-19] 
-DEG.clust13 <- cluster.order[cluster.order$cluster == '13',]
-DEG.clust13 <- DEG.clust13[,-19] 
-DEG.clust14 <- cluster.order[cluster.order$cluster == '14',]
-DEG.clust14 <- DEG.clust14[,-19] 
-DEG.clust15 <- cluster.order[cluster.order$cluster == '15',]
-DEG.clust15 <- DEG.clust15[,-19] 
-DEG.clust16 <- cluster.order[cluster.order$cluster == '16',]
-DEG.clust16 <- DEG.clust16[,-19] 
-DEG.clust17 <- cluster.order[cluster.order$cluster == '17',]
-DEG.clust17 <- DEG.clust17[,-19] 
-DEG.clust18 <- cluster.order[cluster.order$cluster == '18',]
-DEG.clust18 <- DEG.clust18[,-19] 
-DEG.clust19 <- cluster.order[cluster.order$cluster == '19',]
-DEG.clust19 <- DEG.clust19[,-19] 
-DEG.clust20 <- cluster.order[cluster.order$cluster == '20',]
-DEG.clust20 <- DEG.clust20[,-19] 
-DEG.clust21 <- cluster.order[cluster.order$cluster == '21',]
-DEG.clust21 <- DEG.clust21[,-19] 
-DEG.clust22 <- cluster.order[cluster.order$cluster == '22',]
-DEG.clust22 <- DEG.clust22[,-19] 
-DEG.clust23 <- cluster.order[cluster.order$cluster == '23',]
-DEG.clust23 <- DEG.clust23[,-19] 
-DEG.clust24 <- cluster.order[cluster.order$cluster == '24',]
-DEG.clust24 <- DEG.clust24[,-19] 
-DEG.clust25 <- cluster.order[cluster.order$cluster == '25',]
-DEG.clust25 <- DEG.clust25[,-19] 
-
-sample.info <- sample.info[order(row.names(sample.info)), ]
-CL1 <- t(DEG.clust1)
-CL1 <- CL1[ order(row.names(CL1)), ]
-CL1 <- cbind(CL1, sample.info)
-
-CL2 <- t(DEG.clust2)
-CL2 <- CL2[ order(row.names(CL2)), ]
-CL2 <- cbind(CL2, sample.info)
-
-CL3 <- t(DEG.clust3)
-CL3 <- CL3[ order(row.names(CL3)), ]
-CL3 <- cbind(CL3, sample.info)
-
-CL4 <- t(DEG.clust4)
-CL4 <- CL4[ order(row.names(CL4)), ]
-CL4 <- cbind(CL4, sample.info)
-
-CL5 <- t(DEG.clust5)
-CL5 <- CL5[ order(row.names(CL5)), ]
-CL5 <- cbind(CL5, sample.info)
-
-CL6 <- t(DEG.clust6)
-CL6 <- CL6[ order(row.names(CL6)), ]
-CL6 <- cbind(CL6, sample.info)
-
-CL7 <- t(DEG.clust7)
-CL7 <- CL7[ order(row.names(CL7)), ]
-CL7 <- cbind(CL7, sample.info)
-
-CL8 <- t(DEG.clust8)
-CL8 <- CL8[ order(row.names(CL8)), ]
-CL8 <- cbind(CL8, sample.info)
-
-CL9 <- t(DEG.clust9)
-CL9 <- CL9[ order(row.names(CL9)), ]
-CL9 <- cbind(CL9, sample.info)
-
-CL10 <- t(DEG.clust10)
-CL10 <- CL10[ order(row.names(CL10)), ]
-CL10 <- cbind(CL10, sample.info)
-
-CL11 <- t(DEG.clust11)
-CL11 <- CL11[ order(row.names(CL11)), ]
-CL11 <- cbind(CL11, sample.info)
-
-CL12 <- t(DEG.clust12)
-CL12 <- CL12[ order(row.names(CL12)), ]
-CL12 <- cbind(CL12, sample.info)
-
-CL13 <- t(DEG.clust13)
-CL13 <- CL13[ order(row.names(CL13)), ]
-CL13 <- cbind(CL13, sample.info)
-
-CL14 <- t(DEG.clust14)
-CL14 <- CL14[ order(row.names(CL14)), ]
-CL14 <- cbind(CL14, sample.info)
-
-CL15 <- t(DEG.clust15)
-CL15 <- CL15[ order(row.names(CL15)), ]
-CL15 <- cbind(CL15, sample.info)
-
-CL16 <- t(DEG.clust16)
-CL16 <- CL16[ order(row.names(CL16)), ]
-CL16 <- cbind(CL16, sample.info)
-
-CL17 <- t(DEG.clust17)
-CL17 <- CL17[ order(row.names(CL17)), ]
-CL17 <- cbind(CL17, sample.info)
-
-CL18 <- t(DEG.clust18)
-CL18 <- CL18[ order(row.names(CL18)), ]
-CL18 <- cbind(CL18, sample.info)
-
-CL19 <- t(DEG.clust19)
-CL19 <- CL19[ order(row.names(CL19)), ]
-CL19 <- cbind(CL19, sample.info)
-
-CL20 <- t(DEG.clust20)
-CL20 <- CL20[ order(row.names(CL20)), ]
-CL20 <- cbind(CL20, sample.info)
-
-CL21 <- t(DEG.clust21)
-CL21 <- CL21[ order(row.names(CL21)), ]
-CL21 <- cbind(CL21, sample.info)
-
-CL22 <- t(DEG.clust22)
-CL22 <- CL22[ order(row.names(CL22)), ]
-CL22 <- cbind(CL22, sample.info)
-
-CL23 <- t(DEG.clust23)
-CL23 <- CL23[ order(row.names(CL23)), ]
-CL23 <- cbind(CL23, sample.info)
-
-CL24 <- t(DEG.clust24)
-CL24 <- CL24[ order(row.names(CL24)), ]
-CL24 <- cbind(CL24, sample.info)
-
-CL25 <- t(DEG.clust25)
-CL25 <- CL25[ order(row.names(CL25)), ]
-CL25 <- cbind(CL25, sample.info)
-
-cluster1 <- melt(CL1, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster1$Cluster <- "Cluster1"
-cluster2 <- melt(CL2, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster2$Cluster <- "Cluster2"
-cluster3 <- melt(CL3, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp") 
-cluster3$Cluster <- "Cluster3"
-cluster4 <- melt(CL4, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster4$Cluster <- "Cluster4"
-cluster5 <- melt(CL5, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster5$Cluster <- "Cluster5"
-cluster6 <- melt(CL6, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster6$Cluster <- "Cluster6"
-cluster7 <- melt(CL7, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster7$Cluster <- "Cluster7"
-cluster8 <- melt(CL8, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster8$Cluster <- "Cluster8"
-cluster9 <- melt(CL9, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster9$Cluster <- "Cluster9"
-cluster10 <- melt(CL10, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster10$Cluster <- "Cluster10"
-
-cluster11 <- melt(CL11, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster11$Cluster <- "Cluster11"
-cluster12 <- melt(CL12, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster12$Cluster <- "Cluster12"
-cluster13 <- melt(CL13, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp") 
-cluster13$Cluster <- "Cluster13"
-cluster14 <- melt(CL14, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster14$Cluster <- "Cluster14"
-cluster15 <- melt(CL15, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster15$Cluster <- "Cluster15"
-cluster16 <- melt(CL16, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster16$Cluster <- "Cluster16"
-cluster17 <- melt(CL17, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster17$Cluster <- "Cluster17"
-cluster18 <- melt(CL18, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster18$Cluster <- "Cluster18"
-cluster19 <- melt(CL19, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster19$Cluster <- "Cluster19"
-cluster20 <- melt(CL20, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster20$Cluster <- "Cluster20"
-
-cluster21 <- melt(CL21, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster21$Cluster <- "Cluster21"
-cluster22 <- melt(CL22, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster22$Cluster <- "Cluster22"
-cluster23 <- melt(CL23, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp") 
-cluster23$Cluster <- "Cluster23"
-cluster24 <- melt(CL24, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster24$Cluster <- "Cluster24"
-cluster25 <- melt(CL25, id=c("Spawn", "Time","TimePoint", "Stage", "Rep", "group"), value.name="Rel.Exp")
-cluster25$Cluster <- "Cluster25"
-
-C1.means <- aggregate(Rel.Exp ~ Spawn + TimePoint, data = cluster1, mean, na.rm = TRUE)
-C2.means <- aggregate(Rel.Exp ~ Spawn + TimePoint, data = cluster2, mean, na.rm = TRUE)
-C3.means <- aggregate(Rel.Exp ~ Spawn + TimePoint, data = cluster3, mean, na.rm = TRUE)
-C4.means <- aggregate(Rel.Exp ~ Spawn + TimePoint, data = cluster4, mean, na.rm = TRUE)
-C5.means <- aggregate(Rel.Exp ~ Spawn + TimePoint, data = cluster5, mean, na.rm = TRUE)
-C6.means <- aggregate(Rel.Exp ~ Spawn + TimePoint, data = cluster6, mean, na.rm = TRUE)
-C7.means <- aggregate(Rel.Exp ~ Spawn + TimePoint, data = cluster7, mean, na.rm = TRUE)
-C8.means <- aggregate(Rel.Exp ~ Spawn + TimePoint, data = cluster8, mean, na.rm = TRUE)
-C9.means <- aggregate(Rel.Exp ~ Spawn + TimePoint, data = cluster9, mean, na.rm = TRUE)
-C10.means <- aggregate(Rel.Exp ~ Spawn + TimePoint, data = cluster10, mean, na.rm = TRUE)
-
-#Want to plot expression plots for each cluster with all data points and lines of mean of cluster
-#YES="gray", NO="black"
-dev.off()
-CLP1 <- ggplot(cluster1, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster1")+
-  theme_classic() +
-  theme(legend.position = "none") +
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP2 <- ggplot(cluster2, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster2")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP3 <- ggplot(cluster3, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster3")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP4 <- ggplot(cluster4, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster4")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP5 <- ggplot(cluster5, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster5")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP6 <- ggplot(cluster6, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster6")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP7 <- ggplot(cluster7, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster7")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP8 <- ggplot(cluster8, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster8")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP9 <- ggplot(cluster9, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster9")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP10 <- ggplot(cluster10, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster10")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP11 <- ggplot(cluster11, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster11")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP12 <- ggplot(cluster12, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster12")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP13 <- ggplot(cluster13, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster13")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP14 <- ggplot(cluster14, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster14")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP15 <- ggplot(cluster15, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster15")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP16 <- ggplot(cluster16, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster16")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP17 <- ggplot(cluster17, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster17")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP18 <- ggplot(cluster18, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster18")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP19 <- ggplot(cluster19, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster19")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP20 <- ggplot(cluster20, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster20")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP21 <- ggplot(cluster21, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster21")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP22 <- ggplot(cluster22, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster22")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP23 <- ggplot(cluster23, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster23")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP24 <- ggplot(cluster24, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster24")+
-  theme_classic() +
-  theme(legend.position = "none")+
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-CLP25 <- ggplot(cluster25, aes(x=TimePoint, y=Rel.Exp, fill=Spawn)) +
-  geom_boxplot() +
-  scale_fill_manual(values=c("black", "gray")) +
-  labs(title="Cluster25")+
-  theme_classic() +
-  theme(legend.position = "none")
-
-figure <- ggarrange(CLP2, CLP4, CLP3, CLP5, CLP9,
-                    CLP14, CLP12, CLP20, CLP8, CLP7,
-                    CLP6, CLP1, CLP13, CLP15, CLP17,
-                    CLP19, CLP16, CLP18, CLP11, CLP10,
-                    CLP25, CLP22, CLP23, CLP21, CLP24,
-                    ncol = 1, nrow = 25)
-figure
-
-ggsave("Output/ggclusters.pdf", device = "pdf", 
-       width = 2,
-       height = 25,
-       units = c("in"))
-
-##### HEATMAP OUTPUT #####
-
-row.annots <- as.data.frame(cluster.order$cluster)
-rownames(row.annots) <- rownames(cluster.order)
-
-#set annotation colors on heatmap factors
-ann_colors <- list(Spawn = c(YES="gray", NO="black"), Time = c("18:00"="steelblue1", "20:00"="yellow3", "0:00"="lightpink2"))
-#"lightpink2", "yellow3", "steelblue1"
-
-dev.off()
-pdf(file="Output/DEG_Heatmap.pdf", width=4, height=16)
-pheatmap(mat, color = colorRampPalette(c("darkblue", "cyan", "white", "yellow", "red"))(100), annotation_col=df, annotation_colors =ann_colors, clustering_method = "average", 
-         clustering_distance_rows="euclidean", show_rownames =FALSE,  cutree_rows=25, cluster_cols=F,
-         show_colnames =F) #plot heatmap of all DEG by group
-dev.off()
-
-pdf(file="Output/Annotated_DEG_Heatmap.pdf", width=4, height=16)
-pheatmap(mat, color = colorRampPalette(c("darkblue", "cyan", "white", "yellow", "red"))(100), annotation_col=df, annotation_colors =ann_colors, clustering_method = "average", 
-         clustering_distance_rows="euclidean", show_rownames =TRUE, fontsize_row = 4,  cutree_rows=25, cluster_cols=F,
-         show_colnames =F) #plot heatmap of all DEG by group
-dev.off()
-
-
-# ##### Generate Annotated Transcript Expression Cluster Table #####
-# 
-# All.Clusters <- rbind(unique.C1, unique.C2, unique.C3, unique.C4, unique.C5, unique.C6) #bind clusters
-# All.Clusters <- All.Clusters[,c(1,21, 23, 26, 30, 31, 32, 46)] #keep selected columns
-# write.csv(All.Clusters, file="Output/All.Clusters_unique_annotated_full.csv")
-# All.Clusters$gene_ontology_blast2 <- All.Clusters$gene_ontology_blast #add another copy of the GO information
-# All.Clusters <- separate(data = All.Clusters, col = sprot_Top_BLASTX_hit, into = c("Protein.Name", "Full.Name"), sep = "\\^", extra="merge") #split columns to get protein ID
-# All.Clusters <- separate(data = All.Clusters, col = Full.Name, into = c( "Full.Name", "Name"), sep = "\\=", extra="merge") #split columns to get protein name
-# All.Clusters <- separate(data = All.Clusters, col = Name, into = c( "Full.Name"), sep = "\\;", extra="drop") #split columns to get protein name
-# All.Clusters <- separate(data = All.Clusters, col = gene_ontology_blast, into = c("CC", "MF"), sep = "GO\\:[0-9]*\\^molecular_function\\^", extra="merge") #split columns to get CC
-# All.Clusters <- separate(data = All.Clusters, col = gene_ontology_blast2, into = c("Funct", "BP"), sep = "GO\\:[0-9]*\\^biological_process\\^", extra="merge") #split columns to get BP
-# All.Clusters <- separate(data = All.Clusters, col = CC, into = c("CC"), sep = "GO\\:[0-9]*\\^biological_process\\^", extra="drop") #split columns to get CC
-# All.Clusters <- separate(data = All.Clusters, col = MF, into = c("MF"), sep = "GO\\:[0-9]*\\^biological_process\\^", extra="drop") #split columns to get MF
-# All.Clusters <- subset(All.Clusters, select=-c(Funct)) #remove unwanted text
-# 
-# All.Clusters$CC <- gsub("GO\\:[0-9]*\\^cellular_component\\^", "", All.Clusters$CC) #remove GO ids
-# All.Clusters$CC <- gsub("\\`",", ", All.Clusters$CC) #remove extra symbols
-# All.Clusters$CC
-# 
-# All.Clusters$MF <- gsub("GO\\:[0-9]*\\^molecular_function\\^", "", All.Clusters$MF)#remove GO ids
-# All.Clusters$MF <- gsub("\\`",", ", All.Clusters$MF)#remove extra symbols
-# All.Clusters$MF
-# 
-# All.Clusters$BP <- gsub("GO\\:[0-9]*\\^biological_process\\^", "", All.Clusters$BP)#remove GO ids
-# All.Clusters$BP <- gsub("\\`",", ", All.Clusters$BP)#remove extra symbols
-# All.Clusters$BP
-# 
-# All.Clusters <- cbind(All.Clusters$Protein.Name, All.Clusters$Full.Name, All.Clusters$CC, All.Clusters$MF, All.Clusters$BP, All.Clusters$Cluster, All.Clusters$Transcript.ID) #choose columns for table
-# write.csv(All.Clusters, file="Output/All.Clusters_unique_annotated_Table2.csv") #write table to file
-# 
-# ##### Pairwise Contrasts of Spawning and Non-Spawnign Corals at each Time Point ##### 
-# #pairwise comparisons of DEGs for SP and NSP corals at each collection point
-# DEG.18 <- results(DEG.int, contrast=c("group", "YES18:00", "NO18:00")) #contrasts between SP NSP at each time
-# DEG.18 #view results
-# sig.num.18 <- sum(DEG.18$padj <0.05, na.rm=T) #the number of significant p values with 1%FDR
-# sig.18 <- subset(DEG.18, padj<0.05,) #identify signficant pvalues with 1%FDR
-# sig.list.18 <- data[which(rownames(data) %in% rownames(sig.18)),] #subset list of sig transcripts from original count data
-# 
-# DE18 <- as.data.frame(sig.18)
-# 
-# DEG.20 <- results(DEG.int, contrast=c("group", "YES20:00", "NO20:00")) #contrasts between SP NSP at each time
-# DEG.20 #view results
-# sig.num.20 <- sum(DEG.20$padj <0.05, na.rm=T) #the number of significant p values with 1%FDR
-# sig.20 <- subset(DEG.20, padj<0.05,) #identify signficant pvalues with 1%FDR
-# sig.list.20 <- data[which(rownames(data) %in% rownames(sig.20)),] #subset list of sig transcripts from original count data
-# 
-# DE20 <- as.data.frame(sig.20)
-# 
-# DEG.00 <- results(DEG.int, contrast=c("group", "YES0:00", "NO0:00")) #contrasts between SP NSP at each time
-# DEG.00 #view results
-# sig.num.00 <- sum(DEG.00$padj <0.05, na.rm=T) #the number of significant p values with 1%FDR
-# sig.00 <- subset(DEG.00, padj<0.05,) #identify signficant pvalues with 1%FDR
-# sig.list.00 <- data[which(rownames(data) %in% rownames(sig.00)),] #subset list of sig transcripts from original count data
-# 
-# DE00 <- as.data.frame(sig.00)
-# 
-# ##### Visualize time points  in Venn Diagram or Intersection Plot #####
-# L18 <- data.frame(rownames(sig.list.18)) #identify DE transcript list from 18:00
-# L18$L18.Count <- 1 #assign all transcripts count of 1
-# colnames(L18) <- c("Transcript.ID", "L18.Count") #name columns
-# L20 <- data.frame(rownames(sig.list.20)) #identify DE transcript list from 20:00
-# L20$L20.Count <- 1 #assign all transcripts count of 1
-# colnames(L20) <- c("Transcript.ID", "L20.Count") #name columns
-# L00 <- data.frame(rownames(sig.list.00)) #identify DE transcript list from 00:00
-# L00$L00.Count <- 1 #assign all transcripts count of 1
-# colnames(L00) <- c("Transcript.ID", "L00.Count") #name columns
-# L18.20 <- merge(L18, L20, by="Transcript.ID", all=T ) #merge lists sequentially with no removal
-# L18.20.00 <- merge(L18.20, L00, by="Transcript.ID", all=T ) #merge lists sequentially with no removal
-# L18.20.00$L18.Count[is.na(L18.20.00$L18.Count)] <- 0 #assign NA=0 count i.e., not DE
-# L18.20.00$L20.Count[is.na(L18.20.00$L20.Count)] <- 0 #assign NA=0 count i.e., not DE
-# L18.20.00$L00.Count[is.na(L18.20.00$L00.Count)] <- 0 #assign NA=0 count i.e., not DE
-# 
-# # Plot Venn Diagram of shared DE between time points
-# vennData<-L18.20.00[,2:4] #set venn data to DE counts only
-# a <- vennCounts(vennData) # compute classification counts
-# colnames(a) <- c('18:00', '20:00', '00:00', "Counts") #set catagory names
-# #pdf(file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/Venn.DEG.pdf")
-# #vennDiagram(a, main='DEG between Spawning and NonSpawning Corals', circle.col=c("yellow", "red", "green")) #draw venn diagram
-# #dev.off()
-# 
-# #Group Intersections
-# colnames(vennData) <- c("18:00","20:00", "00:00") #set catagory names
-# pdf(file="Output/SP_NSP_DEG_Intersections.pdf", useDingbats = TRUE)
-# upset(vennData, sets = c('18:00','20:00', '00:00'), sets.bar.color = c("lightpink2", "yellow3", "steelblue1"), main.bar.color = c("darkgrey", "black", "black", "black", "steelblue1", "yellow3", "lightpink2"), order.by = "degree")
-# dev.off()
-# 
-# #Look for match between all lists
-# shared.all <- Reduce(intersect, list(rownames(sig.list.18),rownames(sig.list.20),rownames(sig.list.00))) #idenitfy shared DE transcripts between each time point 
-# shared.all #view results
-# shared.all <- as.data.frame(shared.all)
-# colnames(shared.all)[1] <- "Transcript.ID"
-# write.csv(shared.all, file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/DEG_shared_18_20_00.csv")
-# 
-# ##### DEG lists between spawning and not spawning corals unique to time points and shared between time points ##### 
-# intersections <- subset(L18.20.00, L18.Count==1 & L20.Count==1 & L00.Count==1) #list DEG found in all time points
-# 
-# #DEG between spawning and not spawning corals Unique to each time point
-# unique.18 <- subset(L18.20.00, L18.Count==1 & L20.Count==0 & L00.Count==0) #list genes unique to 18:00
-# unique.20 <- subset(L18.20.00, L18.Count==0 & L20.Count==1 & L00.Count==0) #list genes unique to 20:00
-# unique.00 <- subset(L18.20.00, L18.Count==0 & L20.Count==0 & L00.Count==1) #list genes unique to 00:00
-# 
-# #DEG between spawning and not spawning corals Shared unique between pairs
-# unique.18.20 <- subset(L18.20.00, L18.Count==1 & L20.Count==1 & L00.Count==0) #list genes common to 18:00 and 20:00
-# unique.18.00 <- subset(L18.20.00, L18.Count==1 & L20.Count==0 & L00.Count==1) #list genes common to 18:00 and 00:00
-# unique.20.00 <- subset(L18.20.00, L18.Count==0 & L20.Count==1 & L00.Count==1) #list genes common to 20:00 and 00:00
-# 
-# #combine ID and rlog normalized counts of genes found in all time points
-# norm.sig.counts <- as.data.frame(mat)
-# norm.sig.counts$Transcript.ID <- rownames(norm.sig.counts)
-# inters <- merge(intersections, norm.sig.counts, by="Transcript.ID") 
-# 
-# # Combine with DE list with annotation data
-# anot.inters <- merge(inters,  annot, by="Gene.ID") #merge sig intersection list and annotations
-# # anot.inters$KG <- sapply(strsplit(as.character(anot.inters$Kegg), split="\\`"), "[", 1)
-# # anot.inters$KG <- gsub(".*:","",anot.inters$KG)
-# # anot.inters$KO <- sapply(strsplit(as.character(anot.inters$Kegg), split="\\`"), "[", 2)
-# # anot.inters$KO <- gsub(".*:","",anot.inters$KO)
-# 
-# annot.intersect_18_20_00 <- merge(shared.all, annot, by="Transcript.ID")
-# write.csv(annot.intersect_18_20_00, file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/Annotated_shared_DEG_18_20_00.csv")
-# 
-# annot.intersect_18_20 <- merge(unique.18.20, annot, by="Transcript.ID")
-# unique(annot.intersect_18_20$Transcript.ID)
-# write.csv(annot.intersect_18_20, file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/Annotated_shared_DEG_18_20.csv")
-# 
-# annot.intersect_18_00 <- merge(unique.18.00, annot, by="Transcript.ID")
-# unique(annot.intersect_18_00$Transcript.ID)
-# write.csv(annot.intersect_18_00, file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/Annotated_shared_DEG_18_00.csv")
-# 
-# annot.intersect_20_00 <- merge(unique.20.00, annot, by="Transcript.ID")
-# unique(annot.intersect_20_00$Transcript.ID)
-# write.csv(annot.intersect_20_00, file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/Annotated_shared_DEG_20_00.csv")
-# 
-# annot.unique.18 <- merge(unique.18, annot, by="Transcript.ID")
-# write.csv(annot.unique.18, file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/Annotated_unique_18.csv")
-# 
-# annot.unique.20 <- merge(unique.20, annot, by="Transcript.ID")
-# write.csv(annot.unique.20, file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/Annotated_unique_20.csv")
-# 
-# annot.unique.00 <- merge(unique.00, annot, by="Transcript.ID")
-# write.csv(annot.unique.00, file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/Annotated_unique_00.csv")
-# 
-# 
-# ##### GO ENRICHMENT ANALYSIS #####
-# #Analysis for All DEGs (both Host and Sym together, only 1 sym gene in DEG list)
-# #read in data files
-# 
-# ##### GO enrichment of shared DE genes #####
-# ALL<-row.names(data) #set the all transcripts list
-# DEG <- as.character(intersections$Transcript.ID) #set the enrichment test list
-# LENGTH <-read.table("Trinity.fasta.seq_lens", sep = "", header=F) #reads in a list of gene lengths
-# gn.keep <- as.data.frame(gn.keep) #filter length to subset same count filter as above
-# colnames(gn.keep) <- c("V1") #name columns
-# lens <- as.data.frame(LENGTH) #set lengths
-# LENGTH <- merge(as.data.frame(LENGTH), gn.keep, by="V1") #merge lengths and transcripts
-# GO <- read.table("go_annotations.txt", sep = "", header=F, stringsAsFactors=FALSE) #id GO annotations
-# GO <- as.data.frame(GO) #filter GO to subset same count filter as above
-# GOs <- merge(as.data.frame(GO), gn.keep, by="V1", all=T) #merge GO, ID
-# GOs[is.na(GOs)] <- "unknown" #list NA as unknown
-# GOs <- merge(GOs, LENGTH, by="V1") #merge
-# GOs <- GOs[,1:2] #remove length 
-# splitted <- strsplit(as.character(GOs$V2.x), ",") #slit into multiple GO ids
-# GO.terms <- data.frame(v1 = rep.int(GOs$V1, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
-# IDs <- row.names(data) #set ID names
-# 
-# #change contig lists to vectors
-# ALL.vector <-c(t(ALL))
-# DEG.vector <-c(t(DEG))
-# ID.vector <- LENGTH$V1
-# LENGTH.vector <-LENGTH$V2
-# 
-# gene.vector=as.integer(ALL.vector%in%DEG.vector) #Construct new vector with 1 for DEG and 0 for others
-# names(gene.vector)=ALL.vector #set names
-# DEG.pwf<-nullp(gene.vector, ID.vector, bias.data=LENGTH.vector) #weight vector by length of gene
-# 
-# #Find enriched GO terms, "selection-unbiased testing for category enrichment amongst differentially expressed (DE) genes for RNA-seq data"
-# GO.wall<-goseq(DEG.pwf, ID.vector, gene2cat=GO.terms, test.cats=c("GO:CC", "GO:BP", "GO:MF"), method="Wallenius", use_genes_without_cat=TRUE)
-# 
-# #How many enriched GO terms do we have
-# class(GO.wall)
-# head(GO.wall)
-# tail(GO.wall)
-# nrow(GO.wall)
-# 
-# #Find only enriched GO terms that are statistically significant at cutoff 
-# enriched.GO.05.a<-GO.wall$category[GO.wall$over_represented_pvalue<.05]
-# enriched.GO.05<-data.frame(enriched.GO.05.a)
-# colnames(enriched.GO.05) <- c("category")
-# enriched.GO.05 <- merge(enriched.GO.05, GO.wall, by="category")
-# 
-# MF.INT <- subset(enriched.GO.05, ontology=="MF")
-# MF.INT <- MF.INT[order(-MF.INT$numDEInCat),]
-# CC.INT <- subset(enriched.GO.05, ontology=="CC")
-# CC.INT <- CC.INT[order(-CC.INT$numDEInCat),]
-# BP.INT <- subset(enriched.GO.05, ontology=="BP")
-# BP.INT <- BP.INT[order(-BP.INT$numDEInCat),]
-# write.csv(MF.INT , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/MF_Sig_Enriched_GO.05_INT.csv")
-# write.csv(CC.INT , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/CC_Sig_Enriched_GO.05_INT.csv")
-# write.csv(BP.INT , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/BP_Sig_Enriched_GO.05_INT.csv")
-# 
 # 
 # ##### GO enrichment of DE genes Unique to 18:00 #####
 # ALL<-row.names(data)
