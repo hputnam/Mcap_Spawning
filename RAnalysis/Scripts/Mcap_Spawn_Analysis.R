@@ -22,6 +22,7 @@ library("tidyverse")
 library("ggpubr")
 library("apeglm")
 library("multiClust")
+library("gplots")
 
 ##### Build Data Set of normalized expression and sample info #####
 counts <- read.csv(file="Data/Mcap_gene_count_matrix.csv", header=T, sep=",", row.names=1) #Load expression matrix 
@@ -42,8 +43,8 @@ Mcap.annot <- Mcap.annot %>%
   distinct(gene, .keep_all = TRUE)
 Mcap.annot$gene <- gsub("augustus.", "", Mcap.annot$gene)
 Mcap.annot$gene <- gsub(".t1", "", Mcap.annot$gene)
-Mcap.annot$GO.IDs <- Mcap.annot$GO.IDs[is.na(Mcap.annot$GO.IDs)] <- "unknown" #list NA as unknown
-
+Mcap.annot$gene <- Mcap.annot$gene %>% replace_na("unknown")
+Mcap.annot$ann.row <- paste0(Mcap.annot$gene," ", Mcap.annot$Prot.ID)
 
 gene.len.df <- read.csv(file="Data/Mcap_stringtie_merged.gtf", header=FALSE, sep="\t", skip=2)
 gene.len.df <- gene.len.df %>%
@@ -54,6 +55,7 @@ gene.len.df <- gene.len.df %>%
   separate(gene, c("gene", "name"), sep=";")
 gene.len.df$gene <- gsub("transcript_id ", "", gene.len.df$name)
 gene.len.df$gene <- gsub(".t1", "", gene.len.df$gene)
+gene.len.df$gene <- gsub(" g", "g", gene.len.df$gene)
 gene.len.df <- gene.len.df[,10:11]
 
 #http://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#the-deseqdataset
@@ -181,7 +183,7 @@ pheatmap(mat, color = colorRampPalette(c("darkblue", "cyan", "white", "yellow", 
          clustering_distance_rows="euclidean", show_rownames =TRUE,fontsize_row = 4, cluster_cols=FALSE, cluster_rows=TRUE,
          show_colnames =TRUE) #plot heatmap of all DEG by group
 
-#Unique Genes Heatmap
+#Unique Genes 
 Time1820.DEGs <- as.data.frame(row.names(Time_18_20_Con.sig.list))
 colnames(Time1820.DEGs) <- "DEGs" 
 Time1800.DEGs <- as.data.frame(row.names(Time_18_00_Con.sig.list))
@@ -193,29 +195,56 @@ colnames(Spawn.DEGs) <- "DEGs"
 #Interact.DEGs <- as.data.frame(row.names(Int_Con.sig.list))
 #colnames(Interact.DEGs) <- "DEGs"
 
+my_list <- list(Time1820.DEGs,Time1800.DEGs, Time2000.DEGs )
+venn(my_list)
+Intersect <- venn(my_list, intersection=TRUE)
+isect <- attr(Intersect, "intersection")
+str(isect)
+
+
+
+
+
+DEGs.Spawn <- Spawn.DEGs
+length(t(unique(DEGs.Spawn)))
+
+DEGS.Time <- rbind(Time1820.DEGs,Time1800.DEGs,Time2000.DEGs)
+DEGS.Time <- unique(DEGS.Time)
+length(t(unique(DEGS.Time)))
+
 DEGS.ALL <- rbind(Spawn.DEGs,Time1820.DEGs,Time1800.DEGs,Time2000.DEGs)
 DEGS.ALL <- unique(DEGS.ALL)
 length(t(unique(DEGS.ALL)))
 
+Spawn.sig.list<- data[which(rownames(data) %in% DEGs.Spawn$DEGs),] #subset list of sig transcripts from original count data
+Spawn.rsig <- rlog(Spawn.sig.list, blind=FALSE) #apply a regularized log transformation to minimize effects of small counts and normalize wrt library size
+write.csv(counts(Spawn.sig.list), file="Output/Spawn_DEG.csv")
+
+Time.sig.list<- data[which(rownames(data) %in% DEGS.Time$DEGs),] #subset list of sig transcripts from original count data
+Time.rsig <- rlog(Time.sig.list, blind=FALSE) #apply a regularized log transformation to minimize effects of small counts and normalize wrt library size
+write.csv(counts(Time.sig.list), file="Output/Time_DEG.csv")
+
 Unique.sig.list <- data[which(rownames(data) %in% DEGS.ALL$DEGs),] #subset list of sig transcripts from original count data
-Unique.rsig <- rlog(counts(Unique.sig.list), blind=FALSE) #apply a regularized log transformation to minimize effects of small counts and normalize wrt library size
+Unique.rsig <- rlog(Unique.sig.list, blind=FALSE) #apply a regularized log transformation to minimize effects of small counts and normalize wrt library size
 write.csv(counts(Unique.sig.list), file="Output/Unique_DEG.csv")
+
+##### Visualization of DEGs
+#PCA and Heatmap
 
 PCA.plot <- plotPCA(Unique.rsig, intgroup = c("Spawn", "Period")) #Plot PCA of all samples for DEG only
 PCA.plot #view plot
 PC.info <-PCA.plot$data #extract plotting data
 dev.off()
 jpeg(file="Output/Unique_PCA.DEG.jpg")
-plot(PC.info$PC1, PC.info$PC2, xlab="PC1 50%", ylab="PC2 25%", pch = c(15, 16)[as.numeric(sample.info$Spawn)], col=c("lightpink2","steelblue1","yellow3")[sample.info$Period], cex=1.3)
+plot(PC.info$PC1, PC.info$PC2, xlab="PC1 50%", ylab="PC2 25%", pch = c(15, 16, 17)[as.numeric(sample.info$Period)], col=c("darkcyan","goldenrod2")[sample.info$Spawn], cex=1.3)
 legend(x="right", 
        bty="n",
        legend = c("PostSpawn", "PreSpawn", "Set", "Not Spawning", "Spawning"),
-       text.col = c("lightpink2","steelblue1","yellow3", "black", "black"),
-       pch = c(15, 15, 15, 15, 16),
-       col = c("white","white","white", "black", "black"),
+       text.col = c("black","black","black", "black", "black"),
+       pch = c(15, 16, 17, 15, 15),
+       col = c("black","black","black", "darkcyan", "goldenrod2"),
        cex=1)
 dev.off()
-
 
 df <- as.data.frame(colData(Unique.rsig)[,c("Spawn","Time")]) #make dataframe
 col.order <- c("T4.17","T4.1","T4.6",
@@ -235,18 +264,20 @@ rownames(Unique.DEG.annot) <- Unique.DEG.annot$ann.row
 mat <- as.matrix(Unique.DEG.annot[,1:18]) #make a matrix
 mat <- mat[,col.order]
 
-out <- pheatmap(mat, color = colorRampPalette(c("darkblue", "cyan", "white", "yellow", "red"))(100), annotation_col=df, scale="row",
-                show_rownames =T, fontsize_row = 4, cluster_cols = FALSE,
+ann_colors <- list(Spawn = c(YES="goldenrod2", NO="darkcyan"), Time = c("18:00"="grey80", "20:00"="bisque4", "0:00"="grey25"))
+out <- pheatmap(mat, color = colorRampPalette(c("darkblue", "cyan", "white",  "red", "purple"))(100), annotation_col=df, scale="row",
+                show_rownames =T, fontsize_row = 4, cluster_cols = FALSE, annotation_colors =ann_colors,
                 show_colnames =F) #plot heatmap of all DEG by group
 
 dev.off()
 pdf(file="Output/Unique_Heatmap.DEG.Annotated.pdf") #save file
-pheatmap(mat, color = colorRampPalette(c("darkblue", "cyan", "white", "yellow", "red"))(100), annotation_col=df, scale="row",
-         show_rownames =T, fontsize_row = 4, cluster_cols = FALSE, cutree_rows=5,
+pheatmap(mat, color = colorRampPalette(c("darkblue", "cyan", "white",  "red", "purple"))(100), annotation_col=df, scale="row",
+         show_rownames =T, fontsize_row = 4, cluster_cols = FALSE, cutree_rows=5, gaps_col=c(3,6,9,12,15), annotation_colors =ann_colors,
          show_colnames =F) #plot heatmap of all DEG by group
 dev.off()
 
 #K means clustering Elbow Method
+Unique.rsig <- rlog(counts(Unique.sig.list), blind=FALSE) #apply a regularized log transformation to minimize effects of small counts and normalize wrt library size
 set.seed(123) #Specify which set of random numbers to use. This will make sure that the same set of random numbers is generated each timea random set of numbers is called. 
 wss <- function(k) {kmeans(Unique.rsig, k, iter.max = 100, nstart = 25 )$tot.withins} # function to compute total within-cluster sum of square 
 k.values <- 1:15# Compute and plot wss for k = 1 to k = 15
@@ -269,9 +300,7 @@ clusts.df <- as.data.frame(clusts)
 clusts.gene.annot <- left_join(clusts.df, Unique.rsig)
 clusts.gene.annot.long <- clusts.gene.annot %>%
   pivot_longer(cols = starts_with("T"))
-
 clusts.gene.annot.df <- left_join(clusts.gene.annot.long, sample.info)
-
 clusts.gene.annot.df$group <-  paste0(clusts.gene.annot.df$Period, "_", clusts.gene.annot.df$Spawn)
   
 mean.clust <- clusts.gene.annot.df %>%
@@ -281,38 +310,55 @@ mean.clust <- clusts.gene.annot.df %>%
 clusts.gene.annot.df$Cluster.Num <- as.factor(as.character(clusts.gene.annot.df$Cluster))
 clusts.gene.annot.df$group <- factor(clusts.gene.annot.df$group, levels = c("PreSpawn_NO", "PreSpawn_YES", "Set_NO", "Set_YES", "PostSpawn_NO", "PostSpawn_YES"))
 
+pdf("Output/DEG_gene_clusters.pdf", width=3, height=5)
 clusts.gene.annot.df %>%
   #filter(Cluster %in% 1) %>%
   group_by(ann.row, Spawn, Time.Num, Cluster) %>%
   summarise(mean.exp = mean(value)) %>%
   mutate(gene.spawn = paste(ann.row, Spawn)) %>%
   ggplot(aes(x=Time.Num, y=mean.exp, colour=Spawn)) +
-  geom_line(aes(group=gene.spawn), alpha=0.5) +
+  geom_line(aes(group=gene.spawn), alpha=0.2) +
   geom_line(aes(group=Spawn), stat = "summary", fun.y = "mean", size = 1.5) +
-  facet_grid(cols = vars(Cluster)) +
+  scale_colour_manual(values=c(YES="goldenrod2", NO="darkcyan"))+
+  scale_x_continuous(breaks=c(1,2,3))+
+  ylab("rlog Gene Expression") +
+  facet_grid(rows = vars(Cluster), scales="free_y") +
   theme_bw() + 
   theme(panel.grid.major = element_blank(),
    panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+dev.off()
 
+clust1 <- subset(clusts.gene.annot, Cluster == 1)
+clust1 <- left_join(clust1, Mcap.annot)
+clust2 <- subset(clusts.gene.annot, Cluster == 2)
+clust2 <- left_join(clust2, Mcap.annot)
+clust3 <- subset(clusts.gene.annot, Cluster == 3)
+clust3 <- left_join(clust3, Mcap.annot)
+clust4 <- subset(clusts.gene.annot, Cluster == 4)
+clust4 <- left_join(clust4, Mcap.annot)
+clust5 <- subset(clusts.gene.annot, Cluster == 5)
+clust5 <- left_join(clust5, Mcap.annot)
 
 ##### GO ENRICHMENT ANALYSIS #####
-#read in data files
-##### GO enrichment SpawnCon.sig.list
-ALL<-row.names(data) #set the all transcripts list
+# GO enrichment Spawn Comparison DEGs
+ALL<- row.names(data) #set the all transcripts list
+ALL.df<- as.data.frame(row.names(data)) #set the all transcripts list
+colnames(ALL.df) <- c("gene")
 DEG <- row.names(SpawnCon.sig.list) #set the enrichment test list
-LENGTH <- gene.len.df #merge lengths and transcripts
-
-GOs <- merge(GOs, LENGTH, by="V1") #merge
-GOs <- GOs[,1:2] #remove length
-splitted <- strsplit(as.character(GOs$V2.x), ",") #slit into multiple GO ids
-GO.terms <- data.frame(v1 = rep.int(GOs$V1, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
-IDs <- row.names(data) #set ID names
+DEG.df <- as.data.frame(DEG)
+colnames(DEG.df) <- c("gene")
+LENGTH <- merge(gene.len.df, ALL.df, by="gene") #length and gene names
+GOs <- Mcap.annot[,c(2,14)] #identify GOids
+#GOs$GO.IDs <- GOs[is.na(GOs$GO.IDs)] <- "unknown" #list NA as unknown
+splitted <- strsplit(as.character(GOs$GO.IDs), "; ") #slit into multiple GO ids
+GO.terms <- data.frame(v1 = rep.int(GOs$gene, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
+#GO.terms <- GO.terms$v2 #list all GO terms
 
 #change contig lists to vectors
 ALL.vector <-c(t(ALL))
 DEG.vector <-c(t(DEG))
-ID.vector <- LENGTH$V1
-LENGTH.vector <-LENGTH$V2
+ID.vector <- LENGTH$gene
+LENGTH.vector <- LENGTH$length
 
 gene.vector=as.integer(ALL.vector%in%DEG.vector) #Construct new vector with 1 for DEG and 0 for others
 names(gene.vector)=ALL.vector #set names
@@ -333,331 +379,207 @@ enriched.GO.05<-data.frame(enriched.GO.05.a)
 colnames(enriched.GO.05) <- c("category")
 enriched.GO.05 <- merge(enriched.GO.05, GO.wall, by="category")
 
-MF.INT <- subset(enriched.GO.05, ontology=="MF")
-MF.INT <- MF.INT[order(-MF.INT$numDEInCat),]
-CC.INT <- subset(enriched.GO.05, ontology=="CC")
-CC.INT <- CC.INT[order(-CC.INT$numDEInCat),]
-BP.INT <- subset(enriched.GO.05, ontology=="BP")
-BP.INT <- BP.INT[order(-BP.INT$numDEInCat),]
-write.csv(MF.INT , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/MF_Sig_Enriched_GO.05_INT.csv")
-write.csv(CC.INT , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/CC_Sig_Enriched_GO.05_INT.csv")
-write.csv(BP.INT , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/BP_Sig_Enriched_GO.05_INT.csv")
+MF.Spawn <- subset(enriched.GO.05, ontology=="MF")
+MF.Spawn <- MF.Spawn[order(-MF.Spawn$numDEInCat),]
+CC.Spawn <- subset(enriched.GO.05, ontology=="CC")
+CC.Spawn <- CC.Spawn[order(-CC.Spawn$numDEInCat),]
+BP.Spawn <- subset(enriched.GO.05, ontology=="BP")
+BP.Spawn <- BP.Spawn[order(-BP.Spawn$numDEInCat),]
+write.csv(MF.Spawn , file = "Output/MF_Sig_Enriched_GO.05_Spawn.csv")
+write.csv(CC.Spawn , file = "Output/CC_Sig_Enriched_GO.05_Spawn.csv")
+write.csv(BP.Spawn , file = "Output/BP_Sig_Enriched_GO.05_Spawn.csv")
 
-# 
-# ##### GO enrichment of DE genes Unique to 18:00 #####
-# ALL<-row.names(data)
-# DEG <- as.character(unique.18$Transcript.ID) #set the enrichment test list
-# LENGTH <-read.table("Trinity.fasta.seq_lens", sep = "", header=F) #reads in a list of gene lengths
-# gn.keep <- as.data.frame(gn.keep) #filter length to subset same count filter as above
-# colnames(gn.keep) <- c("V1") #name columns
-# lens <- as.data.frame(LENGTH) #set lengths
-# LENGTH <- merge(as.data.frame(LENGTH), gn.keep, by="V1") #merge lengths and transcripts
-# GO <- read.table("go_annotations.txt", sep = "", header=F, stringsAsFactors=FALSE) #id GO annotations
-# GO <- as.data.frame(GO) #filter GO to subset same count filter as above
-# GOs <- merge(as.data.frame(GO), gn.keep, by="V1", all=T) #merge GO, ID
-# GOs[is.na(GOs)] <- "unknown" #list NA as unknown
-# GOs <- merge(GOs, LENGTH, by="V1") #merge
-# GOs <- GOs[,1:2] #remove length 
-# splitted <- strsplit(as.character(GOs$V2.x), ",") #slit into multiple GO ids
-# GO.terms <- data.frame(v1 = rep.int(GOs$V1, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
-# IDs <- row.names(data) #set ID names
-# 
-# #change contig lists to vectors
-# ALL.vector <-c(t(ALL))
-# DEG.vector <-c(t(DEG))
-# ID.vector <- LENGTH$V1
-# LENGTH.vector <-LENGTH$V2
-# 
-# gene.vector=as.integer(ALL.vector%in%DEG.vector) #Construct new vector with 1 for DEG and 0 for others
-# names(gene.vector)=ALL.vector #set names
-# DEG.pwf<-nullp(gene.vector, ID.vector, bias.data=LENGTH.vector) #weight vector by length of gene
-# 
-# #Find enriched GO terms, "selection-unbiased testing for category enrichment amongst differentially expressed (DE) genes for RNA-seq data"
-# GO.wall<-goseq(DEG.pwf, ID.vector, gene2cat=GO.terms, test.cats=c("GO:CC", "GO:BP", "GO:MF"), method="Wallenius", use_genes_without_cat=TRUE)
-# 
-# #How many enriched GO terms do we have
-# class(GO.wall)
-# head(GO.wall)
-# tail(GO.wall)
-# nrow(GO.wall)
-# 
-# #Find only enriched GO terms that are statistically significant at cutoff 
-# enriched.GO.05.a<-GO.wall$category[GO.wall$over_represented_pvalue<.05]
-# enriched.GO.05<-data.frame(enriched.GO.05.a)
-# colnames(enriched.GO.05) <- c("category")
-# enriched.GO.05 <- merge(enriched.GO.05, GO.wall, by="category")
-# 
-# MF.18 <- subset(enriched.GO.05, ontology=="MF")
-# MF.18 <- MF.18[order(-MF.18$numDEInCat),]
-# CC.18 <- subset(enriched.GO.05, ontology=="CC")
-# CC.18 <- CC.18[order(-CC.18$numDEInCat),]
-# BP.18 <- subset(enriched.GO.05, ontology=="BP")
-# BP.18 <- BP.18[order(-BP.18$numDEInCat),]
-# write.csv(MF.18 , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/MF_Sig_Enriched_GO.05_18.csv")
-# write.csv(CC.18 , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/CC_Sig_Enriched_GO.05_18.csv")
-# write.csv(BP.18 , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/BP_Sig_Enriched_GO.05_18.csv")
-# 
-# 
-# 
-# ##### GO enrichment of DE genes Unique to 20:00 #####
-# ALL<-row.names(data)
-# DEG <- as.character(unique.20$Transcript.ID) #row.names(sig) 
-# LENGTH <-read.table("Trinity.fasta.seq_lens", sep = "", header=F) #reads in a list of gene lengths
-# gn.keep <- as.data.frame(gn.keep) #filter length to subset same count filter as above
-# colnames(gn.keep) <- c("V1") #name columns
-# lens <- as.data.frame(LENGTH) #set lengths
-# LENGTH <- merge(as.data.frame(LENGTH), gn.keep, by="V1") #merge lengths and transcripts
-# GO <- read.table("go_annotations.txt", sep = "", header=F, stringsAsFactors=FALSE) #id GO annotations
-# GO <- as.data.frame(GO) #filter GO to subset same count filter as above
-# GOs <- merge(as.data.frame(GO), gn.keep, by="V1", all=T) #merge GO, ID
-# GOs[is.na(GOs)] <- "unknown" #list NA as unknown
-# GOs <- merge(GOs, LENGTH, by="V1") #merge
-# GOs <- GOs[,1:2] #remove length 
-# splitted <- strsplit(as.character(GOs$V2.x), ",") #slit into multiple GO ids
-# GO.terms <- data.frame(v1 = rep.int(GOs$V1, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
-# IDs <- row.names(data) #set ID names
-# 
-# #change contig lists to vectors
-# ALL.vector <-c(t(ALL))
-# DEG.vector <-c(t(DEG))
-# ID.vector <- LENGTH$V1
-# LENGTH.vector <-LENGTH$V2
-# 
-# gene.vector=as.integer(ALL.vector%in%DEG.vector) #Construct new vector with 1 for DEG and 0 for others
-# names(gene.vector)=ALL.vector #set names
-# DEG.pwf<-nullp(gene.vector, ID.vector, bias.data=LENGTH.vector) #weight vector by length of gene
-# 
-# #Find enriched GO terms, "selection-unbiased testing for category enrichment amongst differentially expressed (DE) genes for RNA-seq data"
-# GO.wall<-goseq(DEG.pwf, ID.vector, gene2cat=GO.terms, test.cats=c("GO:CC", "GO:BP", "GO:MF"), method="Wallenius", use_genes_without_cat=TRUE)
-# 
-# #How many enriched GO terms do we have
-# class(GO.wall)
-# head(GO.wall)
-# tail(GO.wall)
-# nrow(GO.wall)
-# 
-# #Find only enriched GO terms that are statistically significant at cutoff 
-# enriched.GO.05.a<-GO.wall$category[GO.wall$over_represented_pvalue<.05]
-# enriched.GO.05<-data.frame(enriched.GO.05.a)
-# colnames(enriched.GO.05) <- c("category")
-# enriched.GO.05 <- merge(enriched.GO.05, GO.wall, by="category")
-# 
-# MF.20 <- subset(enriched.GO.05, ontology=="MF")
-# MF.20 <- MF.20[order(-MF.20$numDEInCat),]
-# CC.20 <- subset(enriched.GO.05, ontology=="CC")
-# CC.20 <- CC.20[order(-CC.20$numDEInCat),]
-# BP.20 <- subset(enriched.GO.05, ontology=="BP")
-# BP.20 <- BP.20[order(-BP.20$numDEInCat),]
-# write.csv(MF.20 , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/MF_Sig_Enriched_GO.05_20.csv")
-# write.csv(CC.20 , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/CC_Sig_Enriched_GO.05_20.csv")
-# write.csv(BP.20 , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/BP_Sig_Enriched_GO.05_20.csv")
-# 
-# ##### GO enrichment of DE genes Unique to 00:00 #####
-# ALL<-row.names(data)
-# DEG <- as.character(unique.00$Transcript.ID) #row.names(sig) 
-# LENGTH <-read.table("Trinity.fasta.seq_lens", sep = "", header=F) #reads in a list of gene lengths
-# gn.keep <- as.data.frame(gn.keep) #filter length to subset same count filter as above
-# colnames(gn.keep) <- c("V1") #name columns
-# lens <- as.data.frame(LENGTH) #set lengths
-# LENGTH <- merge(as.data.frame(LENGTH), gn.keep, by="V1") #merge lengths and transcripts
-# GO <- read.table("go_annotations.txt", sep = "", header=F, stringsAsFactors=FALSE) #id GO annotations
-# GO <- as.data.frame(GO) #filter GO to subset same count filter as above
-# GOs <- merge(as.data.frame(GO), gn.keep, by="V1", all=T) #merge GO, ID
-# GOs[is.na(GOs)] <- "unknown" #list NA as unknown
-# GOs <- merge(GOs, LENGTH, by="V1") #merge
-# GOs <- GOs[,1:2] #remove length 
-# splitted <- strsplit(as.character(GOs$V2.x), ",") #slit into multiple GO ids
-# GO.terms <- data.frame(v1 = rep.int(GOs$V1, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
-# IDs <- row.names(data) #set ID names
-# 
-# #change contig lists to vectors
-# ALL.vector <-c(t(ALL))
-# DEG.vector <-c(t(DEG))
-# ID.vector <- LENGTH$V1
-# LENGTH.vector <-LENGTH$V2
-# 
-# gene.vector=as.integer(ALL.vector%in%DEG.vector) #Construct new vector with 1 for DEG and 0 for others
-# names(gene.vector)=ALL.vector #set names
-# DEG.pwf<-nullp(gene.vector, ID.vector, bias.data=LENGTH.vector) #weight vector by length of gene
-# 
-# #Find enriched GO terms, "selection-unbiased testing for category enrichment amongst differentially expressed (DE) genes for RNA-seq data"
-# GO.wall<-goseq(DEG.pwf, ID.vector, gene2cat=GO.terms, test.cats=c("GO:CC", "GO:BP", "GO:MF"), method="Wallenius", use_genes_without_cat=TRUE)
-# 
-# #How many enriched GO terms do we have
-# class(GO.wall)
-# head(GO.wall)
-# tail(GO.wall)
-# nrow(GO.wall)
-# 
-# #Find only enriched GO terms that are statistically significant at cutoff 
-# enriched.GO.05.a<-GO.wall$category[GO.wall$over_represented_pvalue<.05]
-# enriched.GO.05<-data.frame(enriched.GO.05.a)
-# colnames(enriched.GO.05) <- c("category")
-# enriched.GO.05 <- merge(enriched.GO.05, GO.wall, by="category")
-# 
-# MF.00 <- subset(enriched.GO.05, ontology=="MF")
-# MF.00 <- MF.00[order(-MF.00$numDEInCat),]
-# CC.00 <- subset(enriched.GO.05, ontology=="CC")
-# CC.00 <- CC.00[order(-CC.00$numDEInCat),]
-# BP.00 <- subset(enriched.GO.05, ontology=="BP")
-# BP.00 <- BP.00[order(-BP.00$numDEInCat),]
-# write.csv(MF.00 , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/MF_Sig_Enriched_GO.05_00.csv")
-# write.csv(CC.00 , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/CC_Sig_Enriched_GO.05_00.csv")
-# write.csv(BP.00 , file = "/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/BP_Sig_Enriched_GO.05_00.csv")
-# 
-# 
-# ##### GO SLIM #####
-# ##### Slim for Biological Processes #####
-# BP.Ids <- as.character(BP.INT$category)
-# myCollection <- GOCollection(BP.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# BP.slim.INT <- goSlim(myCollection, slim, "BP")
-# BP.slim.INT <-BP.slim.INT[,c(1,3)]
-# 
-# BP.Ids <- as.character(BP.18$category)
-# myCollection <- GOCollection(BP.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# BP.slim.18 <- goSlim(myCollection, slim, "BP")
-# BP.slim.18 <-BP.slim.18[,c(1,3)]
-# 
-# BP.Ids <- as.character(BP.20$category)
-# myCollection <- GOCollection(BP.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# BP.slim.20 <- goSlim(myCollection, slim, "BP")
-# BP.slim.20 <-BP.slim.20[,c(1,3)]
-# 
-# BP.Ids <- as.character(BP.00$category)
-# myCollection <- GOCollection(BP.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# BP.slim.00 <- goSlim(myCollection, slim, "BP")
-# BP.slim.00 <-BP.slim.00[,c(1,3)]
-# 
-# BP.slim.all <- merge(BP.slim.INT, BP.slim.18, by="Term", all = T )
-# BP.slim.all <- merge(BP.slim.all, BP.slim.20, by="Term", all = T )
-# colnames(BP.slim.all) <- c("Term", "Intersection", "18:00", "20:00")
-# BP.slim.all <- merge(BP.slim.all, BP.slim.00, by="Term", all = T )
-# colnames(BP.slim.all) <- c("Term", "Intersection", "18:00", "20:00", "00:00")
-# BP.slim.all 
-# BP.slim.all  <- BP.slim.all[order(BP.slim.all$Intersection),]
-# BP.slim.all$Term <- gsub("biological_process", "unknown", BP.slim.all$Term)
-# BP.slim.all
-# BP.slim.all <- BP.slim.all[rowSums(BP.slim.all[, -1])>3, ]
-# BP.slim.all <-head(BP.slim.all,-1)
-# 
-# 
-# pdf(file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/BP_enrichment_SPvsNO.pdf")
-# par(mfrow=c(1,4))
-# par(mar=c(3,1,1,0), oma = c(0.1, 10, 0.1, 0.5))
-# barplot(BP.slim.all$Intersection, horiz = T, col="blue", names.arg=BP.slim.all$Term, las=1, cex.names = 0.6, xlim=c(0,105), main = "ALL")
-# barplot(BP.slim.all$`18:00`, horiz = T, col="yellow", xlim=c(0,105), main = "18:00")
-# barplot(BP.slim.all$`20:00`, horiz = T, col="red", xlim=c(0,105), main = "20:00")
-# barplot(BP.slim.all$`00:00`, horiz = T, col="green", xlim=c(0,105), main = "00:00")
-# dev.off()
-# 
-# ##### Slim for Molecular Function #####
-# MF.Ids <- as.character(MF.INT$category)
-# myCollection <- GOCollection(MF.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# MF.slim.INT <- goSlim(myCollection, slim, "MF")
-# MF.slim.INT <-MF.slim.INT[,c(1,3)]
-# 
-# MF.Ids <- as.character(MF.18$category)
-# myCollection <- GOCollection(MF.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# MF.slim.18 <- goSlim(myCollection, slim, "MF")
-# MF.slim.18 <-MF.slim.18[,c(1,3)]
-# 
-# MF.Ids <- as.character(MF.20$category)
-# myCollection <- GOCollection(MF.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# MF.slim.20 <- goSlim(myCollection, slim, "MF")
-# MF.slim.20 <-MF.slim.20[,c(1,3)]
-# 
-# MF.Ids <- as.character(MF.00$category)
-# myCollection <- GOCollection(MF.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# MF.slim.00 <- goSlim(myCollection, slim, "MF")
-# MF.slim.00 <-MF.slim.00[,c(1,3)]
-# 
-# MF.slim.all <- merge(MF.slim.INT, MF.slim.18, by="Term", all = T )
-# MF.slim.all <- merge(MF.slim.all, MF.slim.20, by="Term", all = T )
-# colnames(MF.slim.all) <- c("Term", "Intersection", "18:00", "20:00")
-# MF.slim.all <- merge(MF.slim.all, MF.slim.00, by="Term", all = T )
-# colnames(MF.slim.all) <- c("Term", "Intersection", "18:00", "20:00", "00:00")
-# MF.slim.all 
-# MF.slim.all  <- MF.slim.all [order(MF.slim.all$Intersection),]
-# MF.slim.all$Term <- gsub("molecular_function", "unknown", MF.slim.all$Term)
-# MF.slim.all
-# MF.slim.all <- MF.slim.all[rowSums(MF.slim.all[, -1])>1, ]
-# MF.slim.all <-head(MF.slim.all,-1)
-# 
-# pdf(file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/MF_enrichment_SPvsNO.pdf")
-# par(mfrow=c(1,4))
-# par(mar=c(3,1,1,0), oma = c(0.1, 10, 0.1, 0.5))
-# barplot(MF.slim.all$Intersection, horiz = T, col="blue", names.arg=MF.slim.all$Term, las=1, cex.names = 0.6, xlim=c(0,65), main = "ALL")
-# barplot(MF.slim.all$`18:00`, horiz = T, col="yellow", xlim=c(0,65), main = "18:00")
-# barplot(MF.slim.all$`20:00`, horiz = T, col="red", xlim=c(0,65), main = "20:00")
-# barplot(MF.slim.all$`00:00`, horiz = T, col="green", xlim=c(0,65), main = "00:00")
-# dev.off()
-# 
-# ##### Slim for Cellular Component #####
-# CC.Ids <- as.character(CC.INT$category)
-# myCollection <- GOCollection(CC.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# CC.slim.INT <- goSlim(myCollection, slim, "CC")
-# CC.slim.INT <-CC.slim.INT[,c(1,3)]
-# 
-# CC.Ids <- as.character(CC.18$category)
-# myCollection <- GOCollection(CC.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# CC.slim.18 <- goSlim(myCollection, slim, "CC")
-# CC.slim.18 <-CC.slim.18[,c(1,3)]
-# 
-# CC.Ids <- as.character(CC.20$category)
-# myCollection <- GOCollection(CC.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# CC.slim.20 <- goSlim(myCollection, slim, "CC")
-# CC.slim.20 <-CC.slim.20[,c(1,3)]
-# 
-# CC.Ids <- as.character(CC.00$category)
-# myCollection <- GOCollection(CC.Ids)
-# fl <- "http://www.geneontology.org/ontology/subsets/goslim_generic.obo"
-# slim <- getOBOCollection(fl, evidenceCode="TAS")
-# CC.slim.00 <- goSlim(myCollection, slim, "CC")
-# CC.slim.00 <-CC.slim.00[,c(1,3)]
-# 
-# CC.slim.all <- merge(CC.slim.INT, CC.slim.18, by="Term", all = T )
-# CC.slim.all <- merge(CC.slim.all, CC.slim.20, by="Term", all = T )
-# colnames(CC.slim.all) <- c("Term", "Intersection", "18:00", "20:00")
-# CC.slim.all <- merge(CC.slim.all, CC.slim.00, by="Term", all = T )
-# colnames(CC.slim.all) <- c("Term", "Intersection", "18:00", "20:00", "00:00")
-# CC.slim.all 
-# CC.slim.all  <- CC.slim.all[order(CC.slim.all$Intersection),]
-# CC.slim.all$Term <- gsub("cellular_component", "unknown", CC.slim.all$Term)
-# CC.slim.all
-# CC.slim.all <- CC.slim.all[rowSums(CC.slim.all[, -1])>1, ]
-# CC.slim.all <-head(CC.slim.all,-1)
-# 
-# pdf(file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/CC_enrichment_SPvsNO.pdf")
-# par(mfrow=c(1,4))
-# par(mar=c(3,1,1,0), oma = c(0.1, 10, 0.1, 0.5))
-# barplot(CC.slim.all$Intersection, horiz = T, col="black", names.arg=CC.slim.all$Term, las=1, cex.names = 0.6, xlim=c(0,20), main = "ALL")
-# barplot(CC.slim.all$`18:00`, horiz = T, col="steelblue1", xlim=c(0,30), main = "18:00")
-# barplot(CC.slim.all$`20:00`, horiz = T, col="yellow3", xlim=c(0,30), main = "20:00")
-# barplot(CC.slim.all$`00:00`, horiz = T, col="lightpink2", xlim=c(0,30), main = "00:00")
-# dev.off()
-# 
+# GO enrichment for Time DEGs
+ALL<- row.names(data) #set the all transcripts list
+ALL.df<- as.data.frame(row.names(data)) #set the all transcripts list
+colnames(ALL.df) <- c("gene")
+DEG <- row.names(Time.sig.list) #set the enrichment test list
+DEG.df <- as.data.frame(DEG)
+colnames(DEG.df) <- c("gene")
+LENGTH <- merge(gene.len.df, ALL.df, by="gene") #length and gene names
+GOs <- Mcap.annot[,c(2,14)] #identify GOids
+splitted <- strsplit(as.character(GOs$GO.IDs), "; ") #slit into multiple GO ids
+GO.terms <- data.frame(v1 = rep.int(GOs$gene, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
+
+#change contig lists to vectors
+ALL.vector <-c(t(ALL))
+DEG.vector <-c(t(DEG))
+ID.vector <- LENGTH$gene
+LENGTH.vector <- LENGTH$length
+
+gene.vector=as.integer(ALL.vector%in%DEG.vector) #Construct new vector with 1 for DEG and 0 for others
+names(gene.vector)=ALL.vector #set names
+DEG.pwf<-nullp(gene.vector, ID.vector, bias.data=LENGTH.vector) #weight vector by length of gene
+
+#Find enriched GO terms, "selection-unbiased testing for category enrichment amongst differentially expressed (DE) genes for RNA-seq data"
+GO.wall<-goseq(DEG.pwf, ID.vector, gene2cat=GO.terms, test.cats=c("GO:CC", "GO:BP", "GO:MF"), method="Wallenius", use_genes_without_cat=TRUE)
+
+#How many enriched GO terms do we have
+class(GO.wall)
+head(GO.wall)
+tail(GO.wall)
+nrow(GO.wall)
+
+#Find only enriched GO terms that are statistically significant at cutoff
+enriched.GO.05.a<-GO.wall$category[GO.wall$over_represented_pvalue<.05]
+enriched.GO.05<-data.frame(enriched.GO.05.a)
+colnames(enriched.GO.05) <- c("category")
+enriched.GO.05 <- merge(enriched.GO.05, GO.wall, by="category")
+
+MF.Time <- subset(enriched.GO.05, ontology=="MF")
+MF.Time <- MF.Time[order(-MF.Time$numDEInCat),]
+CC.Time <- subset(enriched.GO.05, ontology=="CC")
+CC.Time <- CC.Time[order(-CC.Time$numDEInCat),]
+BP.Time <- subset(enriched.GO.05, ontology=="BP")
+BP.Time <- BP.Time[order(-BP.Time$numDEInCat),]
+write.csv(MF.Time , file = "Output/MF_Sig_Enriched_GO.05_Time.csv")
+write.csv(CC.Time , file = "Output/CC_Sig_Enriched_GO.05_Time.csv")
+write.csv(BP.Time , file = "Output/BP_Sig_Enriched_GO.05_Time.csv")
+
+# GO enrichment for PreSpawn (18:00) vs Set (20:00) DEGs
+ALL<- row.names(data) #set the all transcripts list
+ALL.df<- as.data.frame(row.names(data)) #set the all transcripts list
+colnames(ALL.df) <- c("gene")
+DEG <- Time1820.DEGs #set the enrichment test list
+DEG.df <- as.data.frame(DEG)
+colnames(DEG.df) <- c("gene")
+LENGTH <- merge(gene.len.df, ALL.df, by="gene") #length and gene names
+GOs <- Mcap.annot[,c(2,14)] #identify GOids
+splitted <- strsplit(as.character(GOs$GO.IDs), "; ") #slit into multiple GO ids
+GO.terms <- data.frame(v1 = rep.int(GOs$gene, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
+
+#change contig lists to vectors
+ALL.vector <-c(t(ALL))
+DEG.vector <-c(t(DEG))
+ID.vector <- LENGTH$gene
+LENGTH.vector <- LENGTH$length
+
+gene.vector=as.integer(ALL.vector%in%DEG.vector) #Construct new vector with 1 for DEG and 0 for others
+names(gene.vector)=ALL.vector #set names
+DEG.pwf<-nullp(gene.vector, ID.vector, bias.data=LENGTH.vector) #weight vector by length of gene
+
+#Find enriched GO terms, "selection-unbiased testing for category enrichment amongst differentially expressed (DE) genes for RNA-seq data"
+GO.wall<-goseq(DEG.pwf, ID.vector, gene2cat=GO.terms, test.cats=c("GO:CC", "GO:BP", "GO:MF"), method="Wallenius", use_genes_without_cat=TRUE)
+
+#How many enriched GO terms do we have
+class(GO.wall)
+head(GO.wall)
+tail(GO.wall)
+nrow(GO.wall)
+
+#Find only enriched GO terms that are statistically significant at cutoff
+enriched.GO.05.a<-GO.wall$category[GO.wall$over_represented_pvalue<.05]
+enriched.GO.05<-data.frame(enriched.GO.05.a)
+colnames(enriched.GO.05) <- c("category")
+enriched.GO.05 <- merge(enriched.GO.05, GO.wall, by="category")
+
+MF.Time.18.20 <- subset(enriched.GO.05, ontology=="MF")
+MF.Time.18.20 <- MF.Time.18.20[order(-MF.Time.18.20$numDEInCat),]
+CC.Time.18.20 <- subset(enriched.GO.05, ontology=="CC")
+CC.Time.18.20 <- CC.Time.18.20[order(-CC.Time.18.20$numDEInCat),]
+BP.Time.18.20 <- subset(enriched.GO.05, ontology=="BP")
+BP.Time.18.20 <- BP.Time.18.20[order(-BP.Time.18.20$numDEInCat),]
+write.csv(MF.Time.18.20 , file = "Output/MF_Sig_Enriched_GO.05_Time.18.20.csv")
+write.csv(CC.Time.18.20 , file = "Output/CC_Sig_Enriched_GO.05_Time.18.20.csv")
+write.csv(BP.Time.18.20 , file = "Output/BP_Sig_Enriched_GO.05_Time.18.20.csv")
+
+#####
+# GO enrichment for PreSpawn (18:00) vs PostSpawn (00:00) DEGs
+ALL<- row.names(data) #set the all transcripts list
+ALL.df<- as.data.frame(row.names(data)) #set the all transcripts list
+colnames(ALL.df) <- c("gene")
+DEG <- Time1800.DEGs #set the enrichment test list
+DEG.df <- as.data.frame(DEG)
+colnames(DEG.df) <- c("gene")
+LENGTH <- merge(gene.len.df, ALL.df, by="gene") #length and gene names
+GOs <- Mcap.annot[,c(2,14)] #identify GOids
+splitted <- strsplit(as.character(GOs$GO.IDs), "; ") #slit into multiple GO ids
+GO.terms <- data.frame(v1 = rep.int(GOs$gene, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
+
+#change contig lists to vectors
+ALL.vector <-c(t(ALL))
+DEG.vector <-c(t(DEG))
+ID.vector <- LENGTH$gene
+LENGTH.vector <- LENGTH$length
+
+gene.vector=as.integer(ALL.vector%in%DEG.vector) #Construct new vector with 1 for DEG and 0 for others
+names(gene.vector)=ALL.vector #set names
+DEG.pwf<-nullp(gene.vector, ID.vector, bias.data=LENGTH.vector) #weight vector by length of gene
+
+#Find enriched GO terms, "selection-unbiased testing for category enrichment amongst differentially expressed (DE) genes for RNA-seq data"
+GO.wall<-goseq(DEG.pwf, ID.vector, gene2cat=GO.terms, test.cats=c("GO:CC", "GO:BP", "GO:MF"), method="Wallenius", use_genes_without_cat=TRUE)
+
+#How many enriched GO terms do we have
+class(GO.wall)
+head(GO.wall)
+tail(GO.wall)
+nrow(GO.wall)
+
+#Find only enriched GO terms that are statistically significant at cutoff
+enriched.GO.05.a<-GO.wall$category[GO.wall$over_represented_pvalue<.05]
+enriched.GO.05<-data.frame(enriched.GO.05.a)
+colnames(enriched.GO.05) <- c("category")
+enriched.GO.05 <- merge(enriched.GO.05, GO.wall, by="category")
+
+MF.Time.18.00 <- subset(enriched.GO.05, ontology=="MF")
+MF.Time.18.00 <- MF.Time.18.00[order(-MF.Time.18.00$numDEInCat),]
+CC.Time.18.00 <- subset(enriched.GO.05, ontology=="CC")
+CC.Time.18.00 <- CC.Time.18.00[order(-CC.Time.18.00$numDEInCat),]
+BP.Time.18.00 <- subset(enriched.GO.05, ontology=="BP")
+BP.Time.18.00 <- BP.Time.18.00[order(-BP.Time.18.00$numDEInCat),]
+write.csv(MF.Time.18.00 , file = "Output/MF_Sig_Enriched_GO.05_Time.18.00.csv")
+write.csv(CC.Time.18.00 , file = "Output/CC_Sig_Enriched_GO.05_Time.18.00.csv")
+write.csv(BP.Time.18.00 , file = "Output/BP_Sig_Enriched_GO.05_Time.18.00.csv")
+
+#####
+# GO enrichment for Set (20:00) vs PostSpawn (00:00) DEGs
+ALL<- row.names(data) #set the all transcripts list
+ALL.df<- as.data.frame(row.names(data)) #set the all transcripts list
+colnames(ALL.df) <- c("gene")
+DEG <- Time2000.DEGs #set the enrichment test list
+DEG.df <- as.data.frame(DEG)
+colnames(DEG.df) <- c("gene")
+LENGTH <- merge(gene.len.df, ALL.df, by="gene") #length and gene names
+GOs <- Mcap.annot[,c(2,14)] #identify GOids
+splitted <- strsplit(as.character(GOs$GO.IDs), "; ") #slit into multiple GO ids
+GO.terms <- data.frame(v1 = rep.int(GOs$gene, sapply(splitted, length)), v2 = unlist(splitted)) #list all GOs with each assigned transcript
+
+#change contig lists to vectors
+ALL.vector <-c(t(ALL))
+DEG.vector <-c(t(DEG))
+ID.vector <- LENGTH$gene
+LENGTH.vector <- LENGTH$length
+
+gene.vector=as.integer(ALL.vector%in%DEG.vector) #Construct new vector with 1 for DEG and 0 for others
+names(gene.vector)=ALL.vector #set names
+DEG.pwf<-nullp(gene.vector, ID.vector, bias.data=LENGTH.vector) #weight vector by length of gene
+
+#Find enriched GO terms, "selection-unbiased testing for category enrichment amongst differentially expressed (DE) genes for RNA-seq data"
+GO.wall<-goseq(DEG.pwf, ID.vector, gene2cat=GO.terms, test.cats=c("GO:CC", "GO:BP", "GO:MF"), method="Wallenius", use_genes_without_cat=TRUE)
+
+#How many enriched GO terms do we have
+class(GO.wall)
+head(GO.wall)
+tail(GO.wall)
+nrow(GO.wall)
+
+#Find only enriched GO terms that are statistically significant at cutoff
+enriched.GO.05.a<-GO.wall$category[GO.wall$over_represented_pvalue<.05]
+enriched.GO.05<-data.frame(enriched.GO.05.a)
+colnames(enriched.GO.05) <- c("category")
+enriched.GO.05 <- merge(enriched.GO.05, GO.wall, by="category")
+
+MF.Time.20.00 <- subset(enriched.GO.05, ontology=="MF")
+MF.Time.20.00 <- MF.Time.20.00[order(-MF.Time.20.00$numDEInCat),]
+CC.Time.20.00 <- subset(enriched.GO.05, ontology=="CC")
+CC.Time.20.00 <- CC.Time.20.00[order(-CC.Time.20.00$numDEInCat),]
+BP.Time.20.00 <- subset(enriched.GO.05, ontology=="BP")
+BP.Time.20.00 <- BP.Time.20.00[order(-BP.Time.20.00$numDEInCat),]
+write.csv(MF.Time.20.00 , file = "Output/MF_Sig_Enriched_GO.05_Time.20.00.csv")
+write.csv(CC.Time.20.00 , file = "Output/CC_Sig_Enriched_GO.05_Time.20.00.csv")
+write.csv(BP.Time.20.00 , file = "Output/BP_Sig_Enriched_GO.05_Time.20.00.csv")
+
+
 # ##### Visualizing GO Enrichment #####
 # #Plot all Enriched GOs
 # pdf(file="/Users/hputnam/MyProjects/Montipora_Spawn_Timing/RAnalysis/Output/GO_enrichment_SPvsNO.pdf")
