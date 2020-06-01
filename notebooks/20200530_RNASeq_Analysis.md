@@ -1,13 +1,11 @@
 # Required Programs
 
-fastqc 
-multiqc  
-fastp  
-samtools  
-hisat2 
-stringtie 
-
-
+FastQC v0.11.8
+MultiQC v1.7 
+fastp 0.20.0
+samtools 1.9 
+hisat2-align-s version 2.1.0
+stringtie v2.1.1 
 
 # Main Folder Spawn
 
@@ -262,7 +260,7 @@ T7-8	SRR5311348.gtf
 prepDE.py -i Mcap_sample_list.txt -g Mcap_gene_count_matrix.csv 
 `
 
-# Obtain the gene name from the MSTRG ID
+# Download from server
 
 scp -r -P 2292  hputnam@kitt.uri.edu:/home/hputnam/Spawn/mapping/Mcap_stringtie_merged.gtf /Users/hputnam/MyProjects/Mcap_Spawning/RAnalysis/Data
 
