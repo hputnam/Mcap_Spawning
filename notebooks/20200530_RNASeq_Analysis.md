@@ -268,7 +268,9 @@ scp -r -P 2292  hputnam@kitt.uri.edu:/home/hputnam/Spawn/mapping/Mcap_stringtie_
 scp -r -P 2292  hputnam@kitt.uri.edu:/home/hputnam/Spawn/mapping/Mcap_gene_count_matrix.csv /Users/hputnam/MyProjects/Mcap_Spawning/RAnalysis/Data
 
 
+tar -cf Mcap_Spawn.gz Spawn 
 
+scp -r -P 2292  hputnam@kitt.uri.edu:/home/hputnam/Mcap_Spawn.gz /Users/hputnam/MyProjects/Mcap_Spawning/
 
 
 
